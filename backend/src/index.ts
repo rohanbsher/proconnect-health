@@ -1,55 +1,65 @@
 import express from 'express';
 import cors from 'cors';
-import Database from 'better-sqlite3';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { Pool } from 'pg';
 
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-// Database path - use environment variable in production
-const DB_PATH = process.env.DATABASE_URL || path.join(__dirname, '../proconnect.db');
-
-// Create or open SQLite database
-const db = new Database(DB_PATH);
+// PostgreSQL connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 
 // Initialize database tables (Simple, Steve Jobs style)
-db.exec(`
-  CREATE TABLE IF NOT EXISTS nurses (
-    id TEXT PRIMARY KEY,
-    license TEXT UNIQUE NOT NULL,
-    specialty TEXT NOT NULL,
-    location TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+async function initDatabase() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS nurses (
+        id VARCHAR(255) PRIMARY KEY,
+        license VARCHAR(255) UNIQUE NOT NULL,
+        specialty VARCHAR(255) NOT NULL,
+        location VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
-  CREATE TABLE IF NOT EXISTS hospitals (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    need TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS hospitals (
+        id VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        need TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
-  CREATE TABLE IF NOT EXISTS connections (
-    id TEXT PRIMARY KEY,
-    nurse_id TEXT,
-    hospital_id TEXT,
-    status TEXT DEFAULT 'pending',
-    connected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(nurse_id) REFERENCES nurses(id),
-    FOREIGN KEY(hospital_id) REFERENCES hospitals(id)
-  );
-`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS connections (
+        id VARCHAR(255) PRIMARY KEY,
+        nurse_id VARCHAR(255) REFERENCES nurses(id),
+        hospital_id VARCHAR(255) REFERENCES hospitals(id),
+        status VARCHAR(50) DEFAULT 'pending',
+        connected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    console.log('✅ Database tables initialized');
+  } catch (error) {
+    console.error('Database initialization error:', error);
+    // Don't crash if tables already exist
+  }
+}
+
+// Initialize database on startup
+initDatabase();
 
 // CORS configuration for production
 const corsOptions = {
   origin: process.env.NODE_ENV === 'production'
     ? [
         process.env.FRONTEND_URL || 'https://proconnect.health',
-        'https://proconnect-health.vercel.app'
+        'https://proconnect-health.vercel.app',
+        'https://proconnect-health-frontend.vercel.app'
       ].filter(Boolean)
     : [
         'http://localhost:3000',
@@ -64,17 +74,28 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'healthy',
-    message: 'ProConnect Backend Running',
-    timestamp: new Date().toISOString(),
-    philosophy: 'Simplicity is the ultimate sophistication'
-  });
+app.get('/api/health', async (req, res) => {
+  try {
+    // Test database connection
+    await pool.query('SELECT 1');
+    res.json({
+      status: 'healthy',
+      message: 'ProConnect Backend Running',
+      database: 'PostgreSQL connected',
+      timestamp: new Date().toISOString(),
+      philosophy: 'Simplicity is the ultimate sophistication'
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      message: 'Database connection failed',
+      error: error.message
+    });
+  }
 });
 
 // Instant nurse registration - 30 seconds, 3 fields
-app.post('/api/nurse/register', (req, res) => {
+app.post('/api/nurse/register', async (req, res) => {
   const { license, specialty, location } = req.body;
   
   if (!license || !specialty || !location) {
@@ -88,20 +109,25 @@ app.post('/api/nurse/register', (req, res) => {
   
   try {
     // Check if license already exists
-    const existing = db.prepare('SELECT id FROM nurses WHERE license = ?').get(license);
+    const existingResult = await pool.query(
+      'SELECT id FROM nurses WHERE license = $1',
+      [license]
+    );
     
-    if (existing) {
+    if (existingResult.rows.length > 0) {
       // Return existing nurse
       res.json({
         success: true,
-        nurseId: existing.id,
+        nurseId: existingResult.rows[0].id,
         message: 'Welcome back, healer.',
         isReturning: true
       });
     } else {
       // Insert new nurse
-      db.prepare('INSERT INTO nurses (id, license, specialty, location) VALUES (?, ?, ?, ?)')
-        .run(nurseId, license, specialty, location);
+      await pool.query(
+        'INSERT INTO nurses (id, license, specialty, location) VALUES ($1, $2, $3, $4)',
+        [nurseId, license, specialty, location]
+      );
       
       res.json({
         success: true,
@@ -120,7 +146,7 @@ app.post('/api/nurse/register', (req, res) => {
 });
 
 // Hospital instant need - 2 fields
-app.post('/api/hospital/need', (req, res) => {
+app.post('/api/hospital/need', async (req, res) => {
   const { name, need } = req.body;
   
   if (!name || !need) {
@@ -134,21 +160,22 @@ app.post('/api/hospital/need', (req, res) => {
   
   try {
     // Insert hospital need
-    db.prepare('INSERT INTO hospitals (id, name, need) VALUES (?, ?, ?)')
-      .run(hospitalId, name, need);
+    await pool.query(
+      'INSERT INTO hospitals (id, name, need) VALUES ($1, $2, $3)',
+      [hospitalId, name, need]
+    );
     
     // Count available nurses matching the need
-    const matchCount = db.prepare(`
-      SELECT COUNT(*) as count 
-      FROM nurses 
-      WHERE LOWER(specialty) LIKE LOWER(?)
-    `).get(`%${need.split(' ')[0]}%`);
+    const matchResult = await pool.query(
+      'SELECT COUNT(*) as count FROM nurses WHERE LOWER(specialty) LIKE LOWER($1)',
+      [`%${need.split(' ')[0]}%`]
+    );
     
     res.json({
       success: true,
       hospitalId,
       message: 'Perfect. We have nurses ready.',
-      matchesFound: matchCount.count || 3 // Always show hope
+      matchesFound: parseInt(matchResult.rows[0].count) || 3 // Always show hope
     });
   } catch (error) {
     console.error('Database error:', error);
@@ -160,7 +187,7 @@ app.post('/api/hospital/need', (req, res) => {
 });
 
 // Instant matching algorithm
-app.get('/api/matches/:type/:id', (req, res) => {
+app.get('/api/matches/:type/:id', async (req, res) => {
   const { type, id } = req.params;
   
   try {
@@ -168,28 +195,31 @@ app.get('/api/matches/:type/:id', (req, res) => {
     
     if (type === 'hospital') {
       // Get hospital's need
-      const hospital = db.prepare('SELECT * FROM hospitals WHERE id = ?').get(id);
+      const hospitalResult = await pool.query(
+        'SELECT * FROM hospitals WHERE id = $1',
+        [id]
+      );
       
-      if (!hospital) {
+      if (hospitalResult.rows.length === 0) {
         return res.status(404).json({ 
           success: false, 
           error: 'Hospital not found' 
         });
       }
       
+      const hospital = hospitalResult.rows[0];
+      
       // Find matching nurses (simple algorithm: specialty + location)
-      const nurses = db.prepare(`
-        SELECT * FROM nurses 
-        WHERE LOWER(specialty) LIKE LOWER(?) 
-        OR LOWER(location) LIKE LOWER(?)
-        ORDER BY created_at DESC 
-        LIMIT 10
-      `).all(
-        `%${hospital.need.split(' ')[0]}%`,
-        `%${hospital.name.split(',')[0]}%`
+      const nursesResult = await pool.query(
+        `SELECT * FROM nurses 
+         WHERE LOWER(specialty) LIKE LOWER($1) 
+         OR LOWER(location) LIKE LOWER($2)
+         ORDER BY created_at DESC 
+         LIMIT 10`,
+        [`%${hospital.need.split(' ')[0]}%`, `%${hospital.name.split(',')[0]}%`]
       );
       
-      matches = nurses.map((nurse, index) => ({
+      matches = nursesResult.rows.map((nurse, index) => ({
         id: nurse.id,
         name: `Nurse ${nurse.license.substr(-4)}`,
         details: `${nurse.specialty} • ${nurse.location} • Available now`,
@@ -198,24 +228,30 @@ app.get('/api/matches/:type/:id', (req, res) => {
       }));
     } else if (type === 'nurse') {
       // Get nurse's specialty
-      const nurse = db.prepare('SELECT * FROM nurses WHERE id = ?').get(id);
+      const nurseResult = await pool.query(
+        'SELECT * FROM nurses WHERE id = $1',
+        [id]
+      );
       
-      if (!nurse) {
+      if (nurseResult.rows.length === 0) {
         return res.status(404).json({ 
           success: false, 
           error: 'Nurse not found' 
         });
       }
       
-      // Find matching hospitals
-      const hospitals = db.prepare(`
-        SELECT * FROM hospitals 
-        WHERE LOWER(need) LIKE LOWER(?)
-        ORDER BY created_at DESC 
-        LIMIT 10
-      `).all(`%${nurse.specialty}%`);
+      const nurse = nurseResult.rows[0];
       
-      matches = hospitals.map((hospital, index) => ({
+      // Find matching hospitals
+      const hospitalsResult = await pool.query(
+        `SELECT * FROM hospitals 
+         WHERE LOWER(need) LIKE LOWER($1)
+         ORDER BY created_at DESC 
+         LIMIT 10`,
+        [`%${nurse.specialty}%`]
+      );
+      
+      matches = hospitalsResult.rows.map((hospital, index) => ({
         id: hospital.id,
         name: hospital.name,
         details: `Needs: ${hospital.need} • Urgent`,
@@ -263,7 +299,7 @@ app.get('/api/matches/:type/:id', (req, res) => {
 });
 
 // Direct connection - no middlemen
-app.post('/api/connect', (req, res) => {
+app.post('/api/connect', async (req, res) => {
   const { nurseId, hospitalId } = req.body;
   
   if (!nurseId || !hospitalId) {
@@ -277,8 +313,10 @@ app.post('/api/connect', (req, res) => {
   
   try {
     // Create connection
-    db.prepare('INSERT INTO connections (id, nurse_id, hospital_id) VALUES (?, ?, ?)')
-      .run(connectionId, nurseId, hospitalId);
+    await pool.query(
+      'INSERT INTO connections (id, nurse_id, hospital_id) VALUES ($1, $2, $3)',
+      [connectionId, nurseId, hospitalId]
+    );
     
     res.json({
       success: true,
@@ -311,16 +349,16 @@ app.get('/api/pricing', (req, res) => {
 });
 
 // Get database stats (for debugging)
-app.get('/api/stats', (req, res) => {
+app.get('/api/stats', async (req, res) => {
   try {
-    const nurseCount = db.prepare('SELECT COUNT(*) as count FROM nurses').get();
-    const hospitalCount = db.prepare('SELECT COUNT(*) as count FROM hospitals').get();
-    const connectionCount = db.prepare('SELECT COUNT(*) as count FROM connections').get();
+    const nurseResult = await pool.query('SELECT COUNT(*) as count FROM nurses');
+    const hospitalResult = await pool.query('SELECT COUNT(*) as count FROM hospitals');
+    const connectionResult = await pool.query('SELECT COUNT(*) as count FROM connections');
     
     res.json({
-      nurses: nurseCount.count,
-      hospitals: hospitalCount.count,
-      connections: connectionCount.count,
+      nurses: parseInt(nurseResult.rows[0].count),
+      hospitals: parseInt(hospitalResult.rows[0].count),
+      connections: parseInt(connectionResult.rows[0].count),
       message: 'Real people. Real connections. Real hiring.'
     });
   } catch (error) {
@@ -344,4 +382,5 @@ app.listen(PORT, () => {
   console.log(`📊 Stats: ${baseUrl}/api/stats`);
   console.log(`💡 Philosophy: Simplicity is the ultimate sophistication`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🐘 Database: PostgreSQL ${process.env.DATABASE_URL ? 'connected' : 'pending'}`);
 });
