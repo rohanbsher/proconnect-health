@@ -1,0 +1,20 @@
+[build]
+builder = "nixpacks"
+buildCommand = "npm ci && npm run build"
+
+[deploy]
+startCommand = "npm start"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
+
+[[services]]
+name = "postgres"
+image = "postgres:16"
+volumes = ["/var/lib/postgresql/data"]
+
+[services.postgres.variables]
+POSTGRES_PASSWORD = "proconnect2024"
+POSTGRES_DB = "proconnect"
+POSTGRES_USER = "proconnect"

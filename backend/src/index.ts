@@ -1,6 +1,10 @@
 import express from 'express';
 import cors from 'cors';
 import { Pool } from 'pg';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -74,7 +78,7 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // Health check endpoint
-app.get('/api/health', async (req, res) => {
+app.get('/api/health', async (_req, res) => {
   try {
     // Test database connection
     await pool.query('SELECT 1');
@@ -85,11 +89,11 @@ app.get('/api/health', async (req, res) => {
       timestamp: new Date().toISOString(),
       philosophy: 'Simplicity is the ultimate sophistication'
     });
-  } catch (error) {
+  } catch (error: any) {
     res.status(500).json({
       status: 'unhealthy',
       message: 'Database connection failed',
-      error: error.message
+      error: error?.message || 'Unknown error'
     });
   }
 });
@@ -116,7 +120,7 @@ app.post('/api/nurse/register', async (req, res) => {
     
     if (existingResult.rows.length > 0) {
       // Return existing nurse
-      res.json({
+      return res.json({
         success: true,
         nurseId: existingResult.rows[0].id,
         message: 'Welcome back, healer.',
@@ -129,16 +133,16 @@ app.post('/api/nurse/register', async (req, res) => {
         [nurseId, license, specialty, location]
       );
       
-      res.json({
+      return res.json({
         success: true,
         nurseId,
         message: 'Welcome, healer. Matching you with hospitals now.',
         matchesAvailable: true
       });
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error('Database error:', error);
-    res.status(500).json({ 
+    return res.status(500).json({ 
       success: false, 
       error: 'Registration failed' 
     });
@@ -171,15 +175,15 @@ app.post('/api/hospital/need', async (req, res) => {
       [`%${need.split(' ')[0]}%`]
     );
     
-    res.json({
+    return res.json({
       success: true,
       hospitalId,
       message: 'Perfect. We have nurses ready.',
       matchesFound: parseInt(matchResult.rows[0].count) || 3 // Always show hope
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Database error:', error);
-    res.status(500).json({ 
+    return res.status(500).json({ 
       success: false, 
       error: 'Failed to register need' 
     });
@@ -191,7 +195,7 @@ app.get('/api/matches/:type/:id', async (req, res) => {
   const { type, id } = req.params;
   
   try {
-    let matches = [];
+    let matches: any[] = [];
     
     if (type === 'hospital') {
       // Get hospital's need
@@ -284,14 +288,14 @@ app.get('/api/matches/:type/:id', async (req, res) => {
       ];
     }
     
-    res.json({
+    return res.json({
       success: true,
       matches,
       message: 'Connect directly. No applications. No waiting.'
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Matching error:', error);
-    res.status(500).json({ 
+    return res.status(500).json({ 
       success: false, 
       error: 'Failed to find matches' 
     });
@@ -318,15 +322,15 @@ app.post('/api/connect', async (req, res) => {
       [connectionId, nurseId, hospitalId]
     );
     
-    res.json({
+    return res.json({
       success: true,
       connectionId,
       chatUrl: `/chat/${connectionId}`,
       message: 'Connected. Start talking. Make the hire.'
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Connection error:', error);
-    res.status(500).json({ 
+    return res.status(500).json({ 
       success: false, 
       error: 'Failed to create connection' 
     });
@@ -334,7 +338,7 @@ app.post('/api/connect', async (req, res) => {
 });
 
 // Simple pricing - Steve Jobs style
-app.get('/api/pricing', (req, res) => {
+app.get('/api/pricing', (_req, res) => {
   res.json({
     price: '$99/month',
     features: [
@@ -349,7 +353,7 @@ app.get('/api/pricing', (req, res) => {
 });
 
 // Get database stats (for debugging)
-app.get('/api/stats', async (req, res) => {
+app.get('/api/stats', async (_req, res) => {
   try {
     const nurseResult = await pool.query('SELECT COUNT(*) as count FROM nurses');
     const hospitalResult = await pool.query('SELECT COUNT(*) as count FROM hospitals');
