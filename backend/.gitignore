@@ -1,5 +1,5 @@
 node_modules/
-dist/
+# dist/ - Including dist for Railway deployment
 .env
 .env.local
 *.log

@@ -1,18 +1,37 @@
+# Multi-stage build for TypeScript
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# Install ALL dependencies (including dev)
+RUN npm install
+
+# Copy source code
+COPY src ./src
+
+# Build TypeScript
+RUN npm run build
+
+# Production stage
 FROM node:18-alpine
 
 WORKDIR /app
 
-# Copy package.json only
-COPY package.json ./
+# Copy package files
+COPY package*.json ./
 
-# Install dependencies (npm install will generate package-lock.json)
+# Install only production dependencies
 RUN npm install --production
 
-# Copy source code
-COPY . .
+# Copy built JavaScript from builder stage
+COPY --from=builder /app/dist ./dist
 
-# Build TypeScript
-RUN npm run build
+# Copy any other necessary files
+COPY . .
 
 # Start the app
 CMD ["npm", "start"]
